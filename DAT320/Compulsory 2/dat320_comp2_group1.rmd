@@ -1,0 +1,844 @@
+---
+title: "Compulsory 2"
+author: "Group 1: Joel Yacob, Artush Mkrtchyan, Vegard Molaug"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r library}
+library(dplyr)
+library(ggplot2)
+library(tidyverse)
+library(lubridate)
+library(gridExtra)
+library(tseries)
+library(zoo)
+library(imputeTS)
+library(lmtest)
+library(forecast)
+library(tseries)
+library(datasets)
+library(tinytex)
+```
+
+# Exercise 1
+
+
+## Task a)
+```{r}
+
+data(austres)
+
+autoplot(austres) + ggtitle('Australian population') + ylab('Number of residents') + xlab('Year')
+
+acf(austres, main='ACF of Australian population', lag.max = 40)
+pacf(austres, main='PACF of Australian population', lag.max = 40)
+
+# STL Decomposition
+austres_stl <- stl(austres, s.window="periodic")
+autoplot(austres_stl) + ggtitle('STL decomposition of Australian population')
+
+kpss_result <- kpss.test(austres)
+print(kpss_result)
+```
+
+There appears to be an upward trend in the number of Australian residents 
+over the years. We can also observe some repeating patterns at regular 
+intervals, indicating seasonality in the data. 
+
+The ACF shows a slow decay, which suggests that the series might be 
+non-stationary. This claim is also backed up by the result of the KPSS-test.
+
+The PACF plot shows a significant spike at lag 1 and then tapers off, 
+which is typical for a series with an autoregressive nature. We would therefore
+suggest an AR term of 1 as a baseline for later analysis.
+If we also consider the non-stationary nature of the 
+series, one differencing term might be needed.The exact number of MA could be 
+tricky to decide, so we believe a number of zero could be a valid option. 
+
+So the arima model we would suggest in this task has a p of 1, d of 1 and q of 
+0.
+
+## Task b)
+
+```{r}
+library(forecast)
+
+auto_arima <- function(ts_data, criterion = "AIC") {
+  criterion_score <- Inf
+  best_p <- best_d <- best_q <- NULL
+  
+  for (p in 0:4) {
+    for (d in 0:3) {
+      for (q in 0:4) {
+        # Use tryCatch to handle potential errors
+        model_fit <- tryCatch({
+          if (d <= 1) {
+            Arima(ts_data, order=c(p,d,q), include.mean=TRUE)
+          } else {
+            Arima(ts_data, order=c(p,d,q), include.mean=FALSE)
+          }
+        }, error = function(e) NULL)  # Return NULL on error
+        
+        # If model fitting was successful, compare AIC/BIC
+        if (!is.null(model_fit)) {
+          if (criterion == "AIC") {
+            current_aic_bic <- model_fit$aic
+          } else {
+            current_aic_bic <- model_fit$bic
+          }
+          
+          if (current_aic_bic < criterion_score) {
+            criterion_score <- current_aic_bic
+            best_p <- p
+            best_d <- d
+            best_q <- q
+          }
+        }
+      }
+    }
+  }
+  
+  return(list(p=best_p, d=best_d, q=best_q, criterion_score=criterion_score))
+}
+
+```
+## Task c)
+```{r}
+train_data <- window(austres, start=c(1971,2), end=c(1988,3))  # First 70 data points
+test_data <- window(austres, start=c(1988,4)) # Remaining 19 data points
+
+results_aic <- auto_arima(train_data, criterion="AIC")
+results_bic <- auto_arima(train_data, criterion="BIC")
+
+cat("Model parameters based on AIC:\n")
+print(results_aic)
+cat("\nModel parameters based on BIC:\n")
+print(results_bic)
+
+```
+Interestingly, the results from the hyperparameter search yielded similar 
+results for both BIC and AIC. The parameters here were different than the model
+we suggested in a), which was a ARIMA(1,1,0).
+
+## Task d) 
+
+```{r}
+# Model with hyperparameters from AIC
+model_aic <- Arima(train_data, order=c(results_aic$p, results_aic$d, results_aic$q))
+forecast_aic <- forecast(model_aic, h=19)
+
+# Model with hyperparameters from BIC
+model_bic <- Arima(train_data, order=c(results_bic$p, results_bic$d, results_bic$q))
+forecast_bic <- forecast(model_bic, h=19)
+
+# Model with suggested hyperparameters from task a)
+model_task_a <- Arima(train_data, order=c(1,1,0))
+forecast_suggested <- forecast(model_task_a, h=19)
+
+# Average model
+model_avg <- meanf(train_data, h=19)
+
+# Drift model
+model_drift <- rwf(train_data, h=19, drift=TRUE)
+
+# Naive model
+model_naive <- rwf(train_data, h=19)
+
+# Seasonal Naive model
+model_snaive <- snaive(train_data, h=19)
+
+rmse <- function(predictions, actual) {
+  sqrt(mean((predictions - actual)^2))
+}
+
+rmse_values <- data.frame(
+  Model = c("AIC", "BIC", "Model based on task A", "Average", "Drift", "Naive", "Seasonal Naive"),
+  RMSE = c(
+    rmse(forecast_aic$mean, test_data),
+    rmse(forecast_bic$mean, test_data),
+    rmse(forecast_suggested$mean, test_data),
+    rmse(model_avg$mean, test_data),
+    rmse(model_drift$mean, test_data),
+    rmse(model_naive$mean, test_data),
+    rmse(model_snaive$mean, test_data)
+  )
+)
+
+print(rmse_values[order(rmse_values$RMSE), ])
+```
+
+Considering the RMSE score, the drift model performed the best. Surprisingly, 
+the parameters we suggested in a) performed slightly better than the optimized
+parameters from task b). For this dataset, the average and naive models do not
+appear to be as effective as the other models in this task.
+
+
+
+
+
+# Exercise 2
+
+## Task a)
+
+
+```{r}
+library(readr)
+library(ggplot2)
+library(forecast)
+library(Metrics)
+
+
+# Load the dataset
+co2_data <- read.csv('co2.csv')
+
+print(co2_data) # Inspecting
+
+# Sum over all regions to obtain total CO2 emission per day
+co2_sum <- aggregate(co2 ~ date, data = co2_data, sum)
+
+# Plot the time series
+ggplot(co2_sum, aes(x = as.Date(date), y = co2)) +
+  geom_line() +
+  labs(title = 'Total CO2 Emission Per Day', x = 'Date', y = 'CO2 Emission') +
+  theme_minimal()
+```
+
+
+```{r}
+# Sum CO2 emissions by date and region
+co2_by_region <- aggregate(co2 ~ date + region, data = co2_data, sum)
+
+# Plot the time series of CO2 emissions for each region
+ggplot(co2_by_region, aes(x = as.Date(date), y = co2, color = region)) +
+  geom_line() +
+  labs(title = 'CO2 Emission Per Day by Region', x = 'Date', y = 'CO2 Emission') +
+  theme_minimal() +
+  theme(legend.title = element_text('Region'))
+```
+
+
+```{r}
+# Plot ACF and PACF
+acf(co2_sum$co2, main = 'Autocorrelation Function (ACF)', lag.max = 365)
+pacf(co2_sum$co2, main = 'Partial Autocorrelation Function (PACF)', lag.max = 365)
+```
+Total CO2 Emission per Day:
+
+The time series plot shows the total CO2 emission per day over the given period.
+There seems to be a clear upward trend, indicating that CO2 emissions have been increasing over time.
+There is some seasonality present as seen from the periodic spikes in the time series plot.
+
+ACF (Autocorrelation Function) of CO2 Emissions:
+
+The ACF plot shows how the CO2 emissions are correlated with their previous values.
+The slow decay in the ACF values indicates a strong positive correlation between the current value and its previous values. This suggests that the time series has a strong autoregressive component.
+The ACF values remain significant for several lags, which might indicate seasonality or a long memory process.
+
+PACF (Partial Autocorrelation Function) of CO2 Emissions:
+
+The PACF plot shows the direct correlation of the CO2 emissions with their previous values, excluding the influence of other lags.
+The PACF values drop off sharply after the first few lags, suggesting that the time series might be well-described by an AR(p) model where p is the number of significant lags in the PACF.
+
+The sharp cut-off in the PACF values indicates that only the first few lags have a direct influence on the current value.
+In summary, the CO2 emissions time series appears to have an upward trend, and the ACF and PACF plots suggest a strong autoregressive component.
+
+
+```{r}
+# Time Series Cross-Validation (TSCV) with expanding window approach
+time_series_cv_expanding <- function(data, model_func,
+                                     initial_train_size = 161,
+                                     forecast_horizon = 21, ...) {
+  # Initialize lists to store forecasts, actual values, and fold indices
+  forecasts <- list()
+  actuals <- list()
+  fold_indices <- list()
+
+  # Set the initial training and test indices
+  train_start <- 1
+  train_end <- initial_train_size
+  test_end <- train_end + forecast_horizon
+
+  # Loop until the end of the dataset minus forecast horizon is reached
+  while (test_end <= nrow(data) - forecast_horizon) {
+    # Split the data into training and test sets
+    train_data <- data[train_start:train_end, ]
+    test_data <- data[(train_end + 1):test_end, ]
+
+    # Train the model and make forecasts
+    model <- model_func(train_data, ...)
+    forecast <- predict(model, n.ahead = forecast_horizon, se.fit=FALSE)
+
+    # Store the forecasts, actual values, and fold indices
+    forecasts[[length(forecasts) + 1]] <- forecast
+    actuals[[length(actuals) + 1]] <- test_data$co2
+    fold_indices[[length(fold_indices) + 1]] <- seq(train_start, test_end)
+
+    # Update the test end index for the next fold
+    test_end <- test_end + forecast_horizon
+  }
+
+  # Add the final fold that starts at 1 and ends at the length of the dataset - 21
+  fold_indices[[length(fold_indices) + 1]] <- seq(1, nrow(data) - forecast_horizon)
+
+  # Return the forecasts, actual values, and fold indices
+  list(forecasts = forecasts, actuals = actuals, fold_indices = fold_indices)
+}
+
+```
+
+
+```{r}
+# ETS model function with trend and additive seasonality
+ets_model_func <- function(data, model_type) {
+  ts_data <- ts(data$co2, frequency = 7)
+  model <- ets(ts_data, model = model_type)  # Additive error, Additive trend, No seasonality
+  return(model)
+}
+
+# Test the time_series_cv_expanding function with ETS(AAN)
+ets1_results <- time_series_cv_expanding(co2_sum,
+                                         ets_model_func, model_type ="AAN")
+
+# ets1_results
+```
+
+```{r}
+# Test the time_series_cv_expanding function with ETS(AAM)
+ets2_results <- time_series_cv_expanding(co2_sum, ets_model_func, model_type ="MNM")
+
+# ets2_results
+```
+
+
+
+```{r}
+# ARIMA model training function
+arima_model_func <- function(data, order=order) {
+  ts_data <- ts(data$co2, frequency = 7) # Weekly frequency
+  
+  # Train the ARIMA model
+  model <- arima(ts_data, order = order)
+  
+  return(model)
+}
+# Using ARIMA order (5, 1, 2) as an example
+arima_results <- time_series_cv_expanding(co2_sum, arima_model_func,
+                                       order = c(5, 1, 2))
+
+#arima_results
+```
+
+
+
+```{r}
+# SARIMA model training function
+sarima_model_func <- function(data, order=order) {
+  ts_data <- ts(data$co2, frequency = 7) # Weekly frequency
+  
+  # Train the SARIMA model
+  model <- arima(ts_data, order = order, seasonal = c(0, 1, 2))
+  
+  return(model)
+}
+# Using SARIMA order (5, 0, 2) with seasonal (0, 1, 2) 
+sarima_results <- time_series_cv_expanding(co2_sum, sarima_model_func,
+                                       order = c(5, 0, 2))
+
+# sarima_results
+```
+
+```{r}
+
+# Compute RMSE for ets1 model
+ets1_rmse <- sapply(1:length(ets1_results$forecasts), function(i) {
+  forecast <- ets1_results$forecasts[[i]]$mean
+  actual <- tail(ets1_results$actuals[[i]], 14) # Getting a mismatch error when using 21
+  rmse(actual, forecast)
+})
+
+
+# Compute RMSE for ets2 model
+ets2_rmse <- sapply(1:length(ets2_results$forecasts), function(i) {
+  forecast <- ets2_results$forecasts[[i]]$mean
+  actual <- tail(ets2_results$actuals[[i]], 14)
+  rmse(actual, forecast)
+})
+
+```
+
+
+
+```{r}
+
+# Compute RMSE for ARIMA model
+arima_rmse <- sapply(1:length(arima_results$forecasts), function(i) {
+  forecast <- arima_results$forecasts[[i]]
+  actual <- tail(arima_results$actuals[[i]], 21) # Consider only the last 21 days of actuals
+  rmse(actual, forecast)
+})
+
+```
+
+
+```{r}
+# Compute RMSE for SARIMA model
+sarima_rmse <- sapply(1:length(sarima_results$forecasts), function(i) {
+  forecast <- sarima_results$forecasts[[i]]
+  actual <- tail(sarima_results$actuals[[i]], 21) # Consider only the last 21 days of actuals
+  rmse(actual, forecast)
+})
+```
+```{r}
+# Compute mean and standard deviation of RMSE for each model
+results <- data.frame(
+  Model = c('Additive ETS', 'Multiplicative ETS', 'ARIMA', 'SARIMA'),
+  Mean_RMSE = c(mean(ets1_rmse), mean(ets2_rmse), mean(arima_rmse), mean(sarima_rmse)),
+  SD_RMSE = c(sd(ets1_rmse), sd(ets2_rmse), sd(arima_rmse), sd(sarima_rmse))
+)
+
+print(results)
+
+```
+
+SARIMA (Seasonal ARIMA): With the lowest mean RMSE, this model appears to be
+the best performer in terms of prediction accuracy. Its standard deviation is
+not the lowest, which means its performance varies more across different test
+sets compared to the ARIMA model. This is expected as SARIMA models account for
+both non-seasonal and seasonal components, which can be particularly useful for
+datasets with clear seasonal patterns.
+
+ARIMA: This model has the second-lowest mean RMSE and a relatively lower
+standard deviation compared to SARIMA, suggesting that it is slightly less
+accurate but more consistent across different folds than the SARIMA model.
+
+Multiplicative ETS: This model has a higher mean RMSE than the ARIMA and
+SARIMA models, but its standard deviation is the highest, indicating less
+consistency in its performance. Multiplicative ETS models are often suitable 
+for series where the seasonal variation increases with the level of the time series.
+
+Additive ETS: This model has the highest mean RMSE, suggesting it is the least
+accurate for this particular dataset. However, its standard deviation is lower
+than that of the multiplicative ETS, indicating more consistent performance
+across folds. Additive models are typically used when the seasonal variation
+is relatively constant over time.
+
+We find it quite weird that the differnces in mean RMSE and SD RMSE are marginal 
+for the different models. We would have expected the SARIMA model to perform much 
+better, but this could be an error from our side. For some reason, the lists
+generated from task b give different lengths for the ETS models
+versus ARIMA and SARIMA.
+Instead of forecasting for 21 days, the ETS models only forecast for 14 days.
+We have tried to fix this, but we have not been able to find the error.
+
+```{r}
+
+```
+
+
+# Exercise 3
+
+## Task a)
+
+```{r}
+watershed <- read.csv('watershed.csv')
+head(watershed)
+
+# Checking for missing values in the dataset
+missing_values <- sapply(watershed, function(x) sum(is.na(x)))
+missing_values
+
+```
+```{r}
+ggplot_na_gapsize(watershed$gauge)
+```
+```{r}
+# We remove the missing values by weighted moving average imputation
+watershed <- watershed %>%
+  mutate(gauge = na_ma(gauge))
+```
+
+```{r}
+watershed$date <- as.Date(watershed$date, format='%Y-%m-%d')
+
+# Plotting the variables gauge, rain, and temp over time
+p1 <- ggplot(watershed, aes(x=date, y=gauge)) + geom_line() + 
+  ggtitle('Gauge over Time') + theme_minimal()
+p2 <- ggplot(watershed, aes(x=date, y=rain)) + geom_line() + 
+  ggtitle('Rainfall over Time') + theme_minimal()
+p3 <- ggplot(watershed, aes(x=date, y=temp)) + geom_line() + 
+  ggtitle('Temperature over Time') + theme_minimal()
+
+grid.arrange(p1, p2, p3)
+```
+```{r}
+kpss_gauge <- kpss.test(watershed$gauge)
+kpss_rain <- kpss.test(watershed$rain)
+kpss_temp <- kpss.test(watershed$temp)
+
+list(kpss_gauge, kpss_rain, kpss_temp)
+```
+We can observe that the KPSS test return a p-value of 0.1 
+for the columns rain and gauge. Therefore, we can not reject the null hypothesis 
+for these columns, which means that they appear to be stationary. Temp has a 
+p-value of 0.6505, which is close to the given significance level of 0.05. We 
+can also assume that temp is stationary, but we can not assert this with the 
+same confidence as the other variables in the dataset. 
+
+## Task b) 
+
+```{r}
+# ACF, PACF and CCF for gauge
+acf(watershed$gauge, main='ACF for Gauge', lag.max = 365)
+pacf(watershed$gauge, main='PACF for Gauge', lag.max = 365)
+ccf(watershed$gauge, watershed$rain, main='CCF Gauge vs Rain', lag.max = 365)
+
+# ACF, PACF and CCF for rain
+acf(watershed$rain, main='ACF for Rainfall', lag.max = 365)
+pacf(watershed$rain, main='PACF for Rainfall', lag.max = 365)
+ccf(watershed$rain, watershed$temp, main='CCF Rain vs Temperature', lag.max = 365)
+
+# ACF, PACF and CCF for temp
+acf(watershed$temp, main='ACF for Temperature', lag.max = 365)
+pacf(watershed$temp, main='PACF for Temperature', lag.max = 365)
+ccf(watershed$temp, watershed$gauge, main='CCF Temperature vs Gauge', lag.max = 365)
+
+```
+The season of the year appears to be the common denominator for the variables
+in the dataset. All variables have roughly similar patterns for the chosen 
+interval of lags. 
+
+```{r}
+# Granger test with gauge and rain
+granger_gauge_rain <- grangertest(gauge ~ rain, data = watershed, order = 1)
+print(granger_gauge_rain)
+
+# Granger test with gauge and temp
+granger_gauge_temp <- grangertest(gauge ~ temp, data = watershed, order = 1)
+print(granger_gauge_temp)
+
+```
+
+
+**Results for Gauge and Rain**:
+Model 1: gauge is predicted by its own past values and past values of rain.
+Model 2: gauge is only predicted by its own past values.
+
+The F value for the rain variable is 13579 and the p-value is < 2.2e-16. The low
+p-value indicates that adding the past values of rain improves 
+predictions of gauge compared to using past values of gauge alone. 
+
+**Results for Gauge and Temp**:
+Model 1: gauge is predicted by its own past values and the past values of temp.
+Model 2: gauge is only predicted by its own past values.
+
+The F value for the temp variable is 245.76 and the p-value is < 2.2e-16.The low 
+p-value suggests that adding the past values of temp significantly improves the 
+prediction of gauge compared to using the past values of gauge alone.
+
+Overall, we can assume that past values of rain and temp can provide additional 
+information in predicting the current value of gauge beyond what the past values 
+of gauge can provide.
+
+## Task c)
+
+```{r}
+train_data <- watershed[1:(30*365),] 
+train_data <- train_data %>%
+  mutate(lagged_rain_1 = lag(rain, 1),
+         lagged_rain_2 = lag(rain, 2),
+         lagged_rain_3 = lag(rain, 3))
+
+train_data <- na.omit(train_data)
+
+test_data <- watershed[(30*365 + 1):nrow(watershed),]
+test_data <- test_data %>%
+  mutate(lagged_rain_1 = lag(rain, 1),
+         lagged_rain_2 = lag(rain, 2),
+         lagged_rain_3 = lag(rain, 3))
+
+test_data <- na.omit(test_data)
+
+# Linear regression model with rain as the predictor
+linear_model <- lm(gauge ~ rain, data=train_data)
+
+# Distributed lag model
+dlm <- lm(gauge ~ rain + lagged_rain_1 + lagged_rain_2 + lagged_rain_3, data=train_data)
+
+# ARIMA model
+arima_model <- auto.arima(train_data$gauge)
+
+# Dynamic regression model with rain as the predictor
+dynamic_reg <- auto.arima(train_data$gauge, xreg = train_data$rain)
+
+# Dynamic regression model with lagged rain as predictors
+dynamic_reg_lagged <- auto.arima(train_data$gauge, xreg = as.matrix(train_data[, c("lagged_rain_1", "lagged_rain_2", "lagged_rain_3")]))
+
+```
+
+```{r}
+# Predictions for linear regression model
+linear_pred <- predict(linear_model, newdata=test_data)
+
+# Predictions for distributed lag model
+dlm_pred <- predict(dlm, newdata = test_data)
+
+# Predictions for ARIMA model
+arima_pred <- forecast(arima_model, h = nrow(test_data))$mean
+
+# Predictions for dynamic regression model
+dynamic_reg_pred <- forecast(dynamic_reg, xreg = test_data$rain)$mean
+
+# Convert lagged variables to a matrix for dynamic regression with lagged predictors
+test_lagged_matrix <- as.matrix(test_data[, c("lagged_rain_1", "lagged_rain_2", "lagged_rain_3")])
+
+# Predictions for dynamic regression model with lagged predictors
+test_lagged_matrix <- as.matrix(test_data[, c("lagged_rain_1", "lagged_rain_2", "lagged_rain_3")])
+dynamic_reg_lagged_pred <- forecast(dynamic_reg_lagged, xreg = test_lagged_matrix)$mean
+
+```
+
+
+```{r}
+rmse <- function(actual, predicted) {
+  sqrt(mean((actual - predicted)^2))
+}
+
+rsquared <- function(actual, predicted) {
+  1 - (sum((actual - predicted)^2) / sum((actual - mean(actual))^2))
+}
+
+models <- list(linear_pred, dlm_pred, arima_pred, dynamic_reg_pred, dynamic_reg_lagged_pred)
+names(models) <- c("Linear regression", "Distributed Lag", "ARIMA", "Dynamic Regression", "Dynamic Regression Lagged")
+
+rmse_values <- sapply(models, function(pred) rmse(test_data$gauge, pred))
+rsquared_values <- sapply(models, function(pred) rsquared(test_data$gauge, pred))
+
+performance_table <- data.frame(Model = names(models), RMSE = rmse_values, R2 = rsquared_values)
+print(performance_table)
+```
+## Task d) 
+
+The lagged versions of dynamic regression and linear regression performed 
+significantly better than the other models for predictions on the test set. 
+This applies to scores for both RMSE and R2, which makes these models better for 
+a practical problem setup. This is likely because the lagged models take into 
+account both the current rainfall and the effect of rainfall from previous days. 
+These factors can be crucial when modeling phenomena like runoff where the 
+effect of rain might be distributed over several days. With a slightly better 
+score for RMSE and R2, the lagged linear regression model appear to be best
+suited for this problem. 
+
+
+
+
+# Exercise 4
+
+
+## Task a) 
+
+
+The model equations are as follows:
+
+***Linear Regression***: \(y_i = x_i\beta + \varepsilon_i\), (1)\
+***Autoregressive Error***: \(\varepsilon_i = \phi_1\varepsilon_{i-1} + \eta_i\), (2)\
+***Re-estimate the parameters (\(\hat{\beta}\))***: \(\eta_i \sim_\text{iid} \text{N}(0, \sigma^2)\), (3)
+
+
+### Transformation in step c)
+
+We want to start from the equation \(\tilde{y}_i = y_i - \phi_1 y_{i-1}\) and derive the equation \(\tilde{x}_i = x_i - \phi_1 x_{i-1}\), respectively, for \(i > 1\).
+
+
+We start with the transformed data:
+
+\[
+\tilde{y}_i = y_i - \phi_1 y_{i-1}
+\]
+
+Now, we want to derive an equation for \(\tilde{x}_i\), so we need to express \(y_i\) in terms of \(x_i\) using the original linear regression equation:
+
+\[
+y_i = x_i\beta + \epsilon_i
+\]
+
+Plug this into the transformation for \(\tilde{y}_i\):
+
+\[
+\tilde{y}_i = (x_i\beta + \epsilon_i) - \phi_1 (x_{i-1}\beta + \epsilon_{i-1})
+\]
+
+Now, expand and simplify:
+
+\[
+\tilde{x_i}\beta = x_i\beta + \epsilon_i - \phi_1 x_{i-1}\beta - \phi_1\epsilon_{i-1}
+\]
+
+The equation for \(\tilde{y}_i\) does not directly involve the error term \(\epsilon_i\), as the transformation is applied to the observed values of \(y_i\) and \(y_{i-1}\) to remove the autoregressive effect. The error term is still present in the original linear regression equation but is not explicitly included in the transformation itself.
+
+The transformation is designed to create a new set of variables \(\tilde{y}_i\) and \(\tilde{x}_i\) that no longer have the autoregressive structure. The error term \(\epsilon_i\) remains in the original equation, but it is not explicitly factored into the transformation because the goal is to eliminate the autoregressive component in the transformed variables.
+
+
+Now, factor out \(\beta\):
+
+\[
+\tilde{x_i}\beta = \beta(x_i - \phi_1 x_{i-1}) + \epsilon_i - \phi_1\epsilon_{i-1}
+\]
+
+Divide both sides by \(\beta\):
+
+\[
+\tilde{x}_i = x_i - \phi_1 x_{i-1} + \frac{\epsilon_i - \phi_1\epsilon_{i-1}}{\beta}
+\]
+
+Now, if we assume that the errors \(\epsilon_i\) and \(\epsilon_{i-1}\) are independently normally distributed with mean 0, and \(\beta\) is a constant, then we can define \(\eta_i\) as the term in the denominator:
+
+\[
+\eta_i = \frac{\epsilon_i - \phi_1\epsilon_{i-1}}{\beta}
+\]
+
+Substituting this into the equation:
+
+\[
+\tilde{x}_i = x_i - \phi_1 x_{i-1} + \eta_i
+\]
+
+
+## Uncorrelated errors 
+
+A regression model on the transformed predictors \(\tilde{x}_i\) and target variable \(\tilde{y}_i\) has uncorrelated errors due to the removal of the autoregressive structure. Assuming correct estimation of \(\phi_1\), the transformation eliminates the autocorrelation, leading to independent errors in the transformed model. This independence allows for reliable OLS parameter estimation.
+
+
+## Task b)
+
+\textbf{Is the parameter vector \(\beta\) the same in the linear regression model on the 
+transformed predictors as in the linear regression model trained on the original predictors?}
+
+In a linear regression model, the parameter vector \(\beta\) may not be the same in the model on transformed predictors as in the model trained on the original predictors. The transformation introduces new variables and changes the relationship between predictors and the target variable. 
+
+The parameter vector \(\beta\) in the transformed model reflects the relationship between the transformed predictors (\(\tilde{x}_i\)) and the transformed target variable (\(\tilde{y}_i\)), which may differ from the relationship in the original model (\(x_i\) and \(y_i\)). 
+
+While the transformation aims to make the errors uncorrelated and enable valid parameter estimation, the estimated \(\beta\) coefficients in the transformed model are typically different from those in the original model due to the changes introduced by the transformation.\
+
+
+\textbf{Is the same concept applicable for general AR(k) error terms?}
+
+The concept of transforming data to remove autocorrelation and obtaining uncorrelated errors is applicable not only to AR(1) models but also to general autoregressive models with AR(k) error terms, where \(k\) represents the order of the autoregressive process. It's crucial to correctly estimate the autoregressive parameters (e.g., \(\phi_1, \phi_2, \ldots, \phi_k\)) to determine the appropriate transformation.\
+
+
+\textbf{Can you think of any practical limitations associated with the described procedure?}
+
+# usikker om rett 
+
+(direct estimation via OLS is possible, but may be affected by multicolliearity)
+
+**Assumption of No Intercep**t: The procedure assumes that the model does not have an intercept. In practical applications, an intercept term may be necessary to account for the mean or baseline level of the target variable, and not including it could result in biased parameter estimates.
+
+**Validity of AR(1) Assumption**: The accuracy of the procedure heavily depends on correctly estimating the autoregressive parameter (\(\phi_1\). If the true data-generating process doesn't conform to an AR(1) structure, the procedure may lead to inaccurate parameter estimates and, consequently, uncorrelated residuals. Ensuring the appropriateness of the AR(1) assumption is paramount for the model's success.
+
+**Data Stationarity**: AR models assume that the data is stationary, meaning that statistical properties like mean and variance remain constant over time. In practice, achieving stationarity can be challenging, and the model may not perform well with non-stationary data. Data preprocessing techniques may be necessary to make the data stationary.
+
+**Model Order Selection**: Selecting the appropriate order for the AR model (e.g., AR(1), AR(2), etc.) is crucial. Choosing an incorrect order can lead to poor model performance. Determining the optimal order often involves trial and error or more sophisticated model selection techniques.
+
+**Assumption of Linearity**: AR models assume a linear relationship between the past observations and the current observation. If the true relationship is nonlinear, the model may not capture the underlying patterns effectively.
+
+**Lack of Causality Information**: AR models are purely data-driven and do not inherently capture causality. While they can identify temporal dependencies, they may not distinguish between causative relationships and spurious correlations in the data.
+
+**Assumption of Gaussian Errors**: AR models often assume that the errors follow a Gaussian distribution. If this assumption is violated, the model's accuracy may be compromised. Robust modeling approaches may be required for non-Gaussian data.
+
+
+## Task c)
+
+\textbf{Is the same concept applicable if the model contains an intercept? If yes, does the
+relation between the parameters \(\beta\) in the transformed and the original space still hold
+if we have a model with intercept? Justify based on the model formulas!}
+
+
+The same concept of applying an autoregressive transformation to remove autocorrelation in the errors can be applied when the model contains an intercept. However, when an intercept is included in the model, the relation between the parameters \(\beta\) in the transformed and the original space may be slightly different. We can justify this based on the model formulas.
+
+In a model with an intercept, the original linear regression equation is given by:
+
+\[
+y_i = \beta_0 + x'_i\beta + \epsilon_i
+\]
+
+Where:\
+- \(\beta_0\) is the intercept term.\
+- \(x'_i\) is the vector of predictors for the \(i\)th observation.\
+- \(\beta\) is the vector of coefficients for the predictors.\
+- \(\epsilon_i\) is the error term for the \(i\)th observation.\
+
+Now, if we apply the autoregressive transformation to both the target variable and the predictors, as described earlier, we obtain the transformed equations:
+
+\[
+\tilde{y}_i = y_i - \phi_1 y_{i-1}
+\]
+
+\[
+\tilde{x}_i = x_i - \phi_1 x_{i-1}
+\]
+
+In the transformed space, there's still a relationship between the parameters \(\beta\) and \(\tilde{\beta}\) (the transformed parameters). The relationship can be derived from the original and transformed equations as follows:
+
+\[
+\tilde{y}_i = \beta_0 + \tilde{x}'_i\tilde{\beta} + \epsilon_i - \phi_1(\beta_0 + \tilde{x}'_{i-1}\tilde{\beta} + \epsilon_{i-1})
+\]
+
+Simplifying this equation, we get:
+
+\[
+\tilde{y}_i = (\beta_0 - \phi_1\beta_0) + \tilde{x}'_i\tilde{\beta} - \phi_1\tilde{x}'_{i-1}\tilde{\beta} + (\epsilon_i - \phi_1\epsilon_{i-1})
+\]
+
+We can see that the relation between the coefficients of the predictors (\(\beta\)) and the transformed coefficients (\(\tilde{\beta}\)) still holds in the presence of an intercept. The transformation does not alter the relationship between the coefficients and their transformed counterparts.
+
+In summary, the concept of removing autocorrelation through an autoregressive transformation can be applied to models with an intercept, and the relationship between the parameters \(\beta\) and \(\tilde{\beta}\) remains consistent, with the transformation applied to both the intercept and the predictors.
+
+
+
+## Task d) 
+
+
+```{r ex4_d}
+
+# Make sure to replace 'data.csv' with the actual file path
+watershed_data <- read.csv("watershed.csv")
+
+water = watershed_data[, c("gauge", "temp", "snow", "rain")]
+
+# Fit the original linear regression model to obtain initial parameter estimates
+original_model <- lm(gauge ~ temp + rain + snow, 
+                     data = water)
+
+# Calculate the residuals from the original model
+residuals_original <- residuals(original_model)
+
+acf(residuals_original)
+
+# Estimate the autoregressive parameter phi_1 from the residuals
+phi_1 <- arima(residuals_original, order = c(1,0,0))$coef[2]
+
+# Perform the autoregressive transformation on the target variable and climate variables
+transformed_data <- diff(is.numeric(water), lag = 1, differences = 1)
+
+# Apply differencing to all numeric columns in the data frame
+df<- data.frame(lapply(water, diff))
+
+# Fit the transformed model with the autoregressive parameter phi_1
+transformed_model <- lm(gauge ~ temp + rain + snow, data = df)
+
+# Check the autocorrelation of residuals in the transformed model
+acf(residuals(transformed_model))
+
+```
+
+
+
+\textbf{Are the model residuals uncorrelated after applying the transformation?}
+
+Yes, they are. In the first plot, the autocorrelation in the errors is not explicitly addressed, and the errors are assumed to be independent.
+
+In the second ACF plot, which represents the autocorrelation of the residuals after applying the transformation, we observe a notable difference. An AR(1) model is employed to address potential autocorrelation by introducing a lagged error term (\(\phi_1\eta_{i-1}\)) into the transformed equation.
+
+The ACF values in the transformed data are significantly closer to zero compared to the original data, indicating that the transformation has effectively reduced autocorrelation. This outcome aligns with the goal of AR(1) models, where the residuals should be uncorrelated.
+

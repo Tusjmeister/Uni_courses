@@ -1,0 +1,516 @@
+---
+title: "DAT320: Compulsory assignment 0"
+author: "Group 1, Joel, Vegard, Artush"
+date: "`r Sys.Date()`"
+output:
+  pdf_document
+---
+
+## Load the necessary libraries
+
+```{r lib}
+
+library(dplyr)
+library(ggplot2)
+library(moments)
+library(Metrics)
+library(caret)
+library(corrplot)
+library(stats)
+library(nortest)
+library(gridExtra) 
+library(raster)
+
+``` 
+
+
+
+# Exercise 1
+
+## Task a)
+
+```{r ex1_taska}
+
+# Load the ChickWeight dataset
+data("ChickWeight", package = "datasets")
+
+# Convert the Diet variable to a factor
+ChickWeight$Diet <- as.factor(ChickWeight$Diet)
+
+# Rename the levels of the Diet factor
+levels(ChickWeight$Diet) <- c("A", "B", "C", "D")
+
+# Print a summary of the dataset
+summary(ChickWeight)
+```
+
+## Task b)
+
+
+
+```{r ex1_taskb}
+
+# Group and summarize the data
+
+diet <- ChickWeight %>%
+  group_by(Diet, Chick) %>%
+  summarise(maxTime = max(Time)
+            )
+
+diet_summary <- diet %>%
+  summarise(
+    Number = n(),
+    Min_Time = min(maxTime),
+    Mean_Time = mean(maxTime),
+    Max_Time = max(maxTime)
+  ) %>%
+  ungroup()
+
+diet_summary
+
+```
+
+
+## Task c)
+
+
+```{r ex1_taskc}
+
+# Load the ChickWeight dataset
+data("ChickWeight", package = "datasets")
+ChickWeight$Diet <- as.factor(ChickWeight$Diet)
+levels(ChickWeight$Diet) <- c("A", "B", "C", "D")
+
+# Compute summary statistics for each time point and Diet
+summary_stats <- ChickWeight %>%
+  group_by(Time, Diet) %>%
+  summarise(
+    mean_weight = mean(weight),
+    sd_weight = sd(weight),
+    n = n(),
+    .groups = "drop" # Drop the grouping
+    
+  ) %>%
+  mutate(
+    se_weight = sd_weight / sqrt(n),
+    lower = mean_weight - sd_weight,
+    upper = mean_weight + sd_weight
+  )
+
+# Plot individual chick time series
+ggplot(ChickWeight, aes(x = Time, y = weight, color = Diet, group = Chick)) +
+  geom_line(alpha = 0.4) +
+  ggtitle("Time Series of Each Chick") +
+  xlab("Time") +
+  ylab("Weight") +
+  theme_minimal()
+
+# Plot averaged weight across all chicks per time point
+ggplot(summary_stats, aes(x = Time, y = mean_weight, color = Diet)) +
+  geom_line(linewidth = 1) +
+  geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.2) +
+  ggtitle("Averaged Weight Across All Chicks") +
+  xlab("Time") +
+  ylab("Avg. Weight") +
+  theme_minimal() +
+  facet_grid(. ~ Diet)
+
+
+```
+
+## Task d)
+
+\textbf{Finally, interpret the results: Based on your analyses, what can we say about the
+influence of the different diets on the weight gain of chicks?}
+
+Based on our analysis we can see that diet C has the largest chick and average value,
+especially on the last day. Diet A Had the lowest weight gain in the 21 days.
+The diets C and B had the largest variation on weight between the chicks. 
+For obtaining the largest chick in an 21 day span, we would recommend the diet C.
+
+
+
+# Exercise 2
+
+## Task a)
+
+
+```{r ex2_taska}
+
+# Load the dataset
+data <- read.csv("fish.csv", sep = ';')
+
+# Get the names of the variables
+variable_names <- colnames(data)
+
+# Create a data frame to store the summary statistics
+summary_stats <- data.frame(Variable = character(0), 
+                            Mean = numeric(0), 
+                            Variance = numeric(0), 
+                            Skewness = numeric(0), 
+                            Min = numeric(0), 
+                            Max = numeric(0))
+
+# Loop through each variable and compute statistics and plot histograms
+for (i in 1:length(variable_names)) {
+  variable <- variable_names[i]
+  
+  # Compute statistics
+  mean_val <- mean(data[[variable]])
+  variance_val <- var(data[[variable]])
+  skewness_val <- skewness(data[[variable]])
+  min_val <- min(data[[variable]])
+  max_val <- max(data[[variable]])
+  
+  # Append the results to the summary data frame
+  summary_stats <- rbind(summary_stats, 
+                          data.frame(Variable = variable, 
+                                     Mean = mean_val, 
+                                     Variance = variance_val, 
+                                     Skewness = skewness_val, 
+                                     Min = min_val, 
+                                     Max = max_val))
+}
+
+# Print the summary statistics
+print(summary_stats)
+
+
+
+```
+
+## Task a (histogram)
+
+```{r ex2_taska_2}
+
+# Get the names of the variables
+variable_names <- colnames(data)
+
+# Define a color palette with different colors for each variable
+color_palette <- rainbow(length(variable_names))
+
+# Create a function for plotting histograms with KDE
+plot_hist_kde <- function(variable) {
+  hist_data <- data[[variable]]
+  hist_title <- paste("Histogram and KDE of", variable)
+  
+  hist(hist_data, prob = TRUE, xlab = variable, main = hist_title, col = color_palette[i])
+  lines(density(hist_data), lwd = 2, col = "blue")  # Adjust line color as needed
+}
+
+# Loop through each variable and create plots
+for (i in 1:length(variable_names)) {
+  variable <- variable_names[i]
+  plot_hist_kde(variable)
+}
+
+
+```
+
+## Task a (shapiro test)
+
+```{r }
+
+# Define a function to perform Shapiro-Wilk test on a variable
+shapiro_test <- function(variable) {
+  shapiro_result <- shapiro.test(variable)
+  return(shapiro_result)
+}
+
+# Apply the Shapiro-Wilk test to each variable in the data
+results <- lapply(data, shapiro_test)
+
+# Print the results
+for (i in 1:length(results)) {
+  variable_name <- names(results)[i]
+  p_value <- results[[i]]$p.value
+  if (p_value <= 0.05) {
+    cat(variable_name, "is not normally distributed (Shapiro-Wilk p-value:", p_value, ")\n")
+  } else {
+    cat(variable_name, "appears to be normally distributed (Shapiro-Wilk p-value:", p_value, ")\n")
+  }
+}
+
+```
+
+
+\textbf{Which family of probability distributions could be used to model each
+of the given variables?}
+
+Based on visual inspections of the histograms and KDE, we can conclude that only
+MGLOP is normally distributed. We can see that CIC0 and LC50 follows closely a 
+normal distribution, while SM1_Dz and GATS1i looks like log normal distribution. 
+NdsCH and NdssC are skewed and binomial. We can also confirm this 
+answer from the shapiro test. 
+
+
+## Task b)
+
+```{r ex2_taskb}
+
+
+# Making a correlation matrix of the fisher data and printing 
+res = cor(data)
+print(res)
+
+# Heatmap of the correlation matrix
+corrplot(res, type = "upper", order = "AOE", method = 'number',
+         tl.col = "black", tl.srt = 45)
+
+```
+\textbf{Explain what you see (you may disregard absolute correlations below the level of 0.4)! 
+Which consequences between input variables may correlations have in a predictive model?}
+
+The first thing we notice is the high correlation between MLOGP and LC50, this
+molecular property has a direct effect on the toxicity level. 
+Strongly interrelated predictor variables may result in collinearity problems,
+which can significantly elevate model variance, particularly within regression analysis.
+
+
+## Task c)
+
+```{r ex2_taskc}
+
+
+#make this example reproducible
+set.seed(1)
+
+#use 75% of dataset as training set and 25% as test set
+sample <- sample(c(TRUE, FALSE), nrow(data), replace=TRUE, prob=c(0.75,0.25))
+train  <- data[sample, ]
+test   <- data[!sample, ]
+
+# Linear regression model 
+model = lm(formula=LC50 ~ ., data=train)
+
+summary(model)
+
+#produce residual vs. fitted plot
+plot(model,1)
+
+#add a horizontal line at 0 
+abline(0,0)
+  
+# predicting the model
+preds = predict(model, test)
+  
+# RMSE (root mean squared error)
+cat('RMSE score: ', RMSE(preds, test$LC50), "\n")
+
+# MAE (mean absolute error)
+cat('MAE score: ', mae(test$LC50, preds), "\n")
+
+# coefficient of determination (R2 score)
+cat('R2 score: ', summary(model)$r.squared, "\n")
+
+# value of the likelihood with the "classical" sigma hat
+log = sum(log(dnorm(x = data$LC50, mean = preds, sd = summary(model)$sigma)))
+
+# AIC and BIC score
+
+aic = AIC(model)
+bic = BIC(model)
+
+cat('log-likelihood: ', log, "\n")
+cat('AIC: ', aic , "\n")
+cat('BIC: ', bic, "\n")
+
+
+```
+\textbf{Which parameters are relevant for the model (i.e., have a parameter 
+estimate, which is significantly unequal to 0)? }
+
+We can look on the summary to understand which parameter is relevant to the model.
+The parameters SM1_Dz and GATS1i are the most relevant, while NDssC is the least 
+relevant with a value of 0.03.
+
+## Task d)
+
+```{r ex2_taskd}
+
+
+#make this example reproducible
+set.seed(1)
+
+#use 75% of dataset as training set and 25% as test set
+sample <- sample(c(TRUE, FALSE), nrow(data), replace=TRUE, prob=c(0.75,0.25))
+train  <- data[sample, ]
+test   <- data[!sample, ]
+
+# Linear regression model 
+model = lm(LC50 ~ CIC0 + SM1_Dz + GATS1i + NdsCH + MLOGP, data=train)
+
+summary(model)
+  
+# predicting the model
+preds = predict(model, test)
+  
+# RMSE (root mean squared error)
+cat('RMSE score: ', RMSE(preds, test$LC50), "\n" )
+
+# MAE (mean absolute error)
+cat('MAE score: ', mae(test$LC50, preds), "\n" )
+
+# coefficient of determination (R2 score)
+cat('R2 score: ', summary(model)$r.squared, "\n" )
+
+# value of the likelihood with the "classical" sigma hat
+log = sum(log(dnorm(x = data$LC50, mean = preds, sd = summary(model)$sigma)))
+
+# AIC and BIC score
+
+aic = AIC(model)
+bic = BIC(model)
+
+cat('log-likelihood: ', log, "\n" )
+cat('AIC: ', aic, "\n" )
+cat('BIC: ', bic, "\n" )
+
+```
+
+\textbf{Compare the model summaries, evaluation metrics on the train and test 
+set, as well as the log-likelihood, AIC and BIC values. Which model should be used?}
+
+The Values of the evaluation metrics (RMSE, MAE, R2) are very slightly better 
+for the model whiteout the parameter NdssC. 
+
+Based on the log-likelihood, AIC and BIC, we can conclude that the 
+model whiteout NdssC has best trade-off between goodness-of-fit and
+complexity, based on a lower overall value of the 3 variables.
+
+In conclusion we would recommend that the model in task D should rather be used.
+The performance of the model is slightly better when excluding the parameter 
+NdssC.
+
+# Exercise 3 
+
+## Task a)
+
+```{r ex3_taska}
+
+Pic_1 = stack("3a.jpg")
+Pic_2 = stack("3a_2.jpg")
+
+plotRGB(Pic_1)
+plotRGB(Pic_2)
+
+```
+
+## Task b)
+
+\textbf{
+Do research on the concept and explain in which scenarios it is necessary to use it
+instead of the default correlation coefficient $\rho_{XY}$ . Give an example.
+}
+
+Partial correlation is particularly useful in scenarios where you want to examine the relationship between two variables while controlling for the influence of one or more other variables. It can be more appropriate than the Pearson correlation at several scenarios.
+One example is in biological and environmental studies, where one may want to see if there is a correlation between blood pressure (X)  and amount of food eaten (Y) while controlling for weight (Z). Another example can be seen in the code in task d, where Z is found to be approximately 0.
+
+
+## Task c)
+
+\textbf{ Does the same property as in task (a) hold for the partial correlation concept, as well,
+i.e. for the partial correlation of $\rho$W1W2|Z ? Justify}
+
+In task (a), we showed that for the simple Pearson correlation ($\rho$), if you perform a linear transformation on two random variables X and Y (W1 = $\alpha_{1}$ * X and W2 = $\alpha_{2}$  * Y), the correlation between the transformed variables $\rho$(W1, W2) is the same as the correlation between the original variables $\rho$(X, Y), regardless of the values of $\alpha_{1}$  and $\alpha_{2}$ . This is because the linear transformation does not change the relationship between the variables, only scales it.
+
+However, the partial correlation concept is different. It measures the relationship between two variables (W1 and W2) while controlling for a third variable (Z). The formula for $\rho$(W1, W2|Z) involves the correlations between X, Y, and Z, which can change the result significantly.
+
+The property of $\rho$(W1, W2|Z) being equal to $\rho$(X, Y|Z) would only hold if the linear transformation (W1 = $\alpha_{1}$ * X and W2 = $\alpha_{2}$ * Y) does not change the relationship between X and Y while accounting for the influence of Z. In other words, for this property to hold, it must be the case that the linear transformation does not affect the conditional relationship between X and Y given Z.
+
+In practice, whether this property holds or not depends on the specific values of $\alpha_{1}$, $\alpha_{2}$, and the underlying relationships between X, Y, and Z. If the linear transformation alters the conditional relationship between X and Y given Z, then $\rho$(W1, W2|Z) will not be the same as $\rho$(X, Y|Z). So, it is not a general property of partial correlation, and the result depends on the particulars of the problem at hand.
+
+
+## Task d)
+
+```{r ex3_taskd}
+
+# Create a data frame with the provided values
+data <- data.frame(X = c(1,1,1,1,0,0,0,0,1,1,1,1),
+                   Z = c(3,1,3,1,1,-1,1,-1,3,1,3,1),
+                   Y = c(5,5,9,1,1,1,5,-3,5,5,9,1))
+
+# Calculate pairwise correlations
+cor_XY <- cor(data$X, data$Y)  # Pearson correlation between X and Y
+cor_XZ <- cor(data$X, data$Z)  # Pearson correlation between X and Z
+cor_YZ <- cor(data$Y, data$Z)  # Pearson correlation between Y and Z
+
+# Calculate partial correlation between X and Y, controlling for Z
+partial_corr_XY_Z <- (cor_XY - cor_XZ * cor_YZ) / sqrt((1 - cor_XZ^2) * (1 - cor_YZ^2))
+
+# Print the results
+cat(paste0("Pearson correlation between X and Y: ", cor_XY), sep = "\n")
+cat(paste0("Pearson correlation between X and Y: ", cor_XZ), sep = "\n")
+cat(paste0("Pearson correlation between X and Y: ", cor_YZ), sep = "\n")
+cat(paste0("Pearson correlation between X and Y: ", partial_corr_XY_Z), sep = "\n")
+
+```
+
+
+# Exercise 4
+
+## Task a)
+
+\begin{align*}
+\text{Step 1: The likelihood function for the model:}\\ 
+L(\beta; \sigma^2;X) = \prod_{i=1}^{n} \frac{1}{\sigma\sqrt{2\pi}}\exp\left(-\frac{\epsilon_i^2}{2\sigma^2}\right)\\
+\text{Step 2: The natural log of the likelihood function is caluclated:}\\ 
+\log L(\beta; \sigma^2;X) = \sum_{i=1}^{n} \left(-\log(\sigma\sqrt{2\pi}) - \frac{\epsilon_i^2}{2\sigma^2}\right)\\
+\text{Step 3: The equation for the i-th epsilon term is substituted into the equation:}\\
+\log L(\beta; \sigma^2;X)=  -n \log(\sigma\sqrt{2\pi}) - \frac{1}{2\sigma^2}\sum_{i=1}^{n} (y_i - X\beta)^2\\
+\text{Step 4: The squared term is expanded:}\\ 
+\log L(\beta; \sigma^2;X)= -n\log(\sigma\sqrt{2\pi}) - \frac{1}{2\sigma^2}\left(\sum_{i=1}^{n} y_i^2 - 2\sum_{i=1}^{n} y_i(X\beta) + \sum_{i=1}^{n} (X\beta)^2\right)\\
+\text{Step 5: The second and third term in the parantheses is rewritten to transposed form:}\\
+\log L(\beta; \sigma^2;X)= -n\log(\sigma\sqrt{2\pi}) - \frac{1}{2\sigma^2}\left(\sum_{i=1}^{n} y_i^2 - 2(X\beta)^T y + \beta^T X^T X\beta\right) \\
+\log L(\beta; \sigma^2;X)= -\frac{n}{2} \log(2\pi) - n \log(\sigma) - \frac{1}{2\sigma^2} (y - X\beta)^T (y - X\beta)
+\end{align*}
+
+## Task b)
+
+### Assumption 1: Independence of Errors $\epsilon_i$:
+This assumption asserts that the errors $\epsilon_i$ for different data points are independent, meaning that the error in predicting one data point is not related to the error in predicting another data point. This assumption affects the first step in the calculations, as it allows us to write the likelihood as a product of individual likelihoods for each data point.
+
+### Assumption 2: Mean 0 of All $\epsilon_i$:
+This assumption states that the errors $\epsilon_i$ have a mean of zero, meaning they are centered around zero and do not systematically overestimate or underestimate the model predictions. This assumption would affect the first calculation step, as we would need to subtract the mean from the $\epsilon_i$ term. We've left the mean term out of our calculations since it's zero.
+
+### Assumption 3: Equal Variances $\sigma^2$ of all $\epsilon_i$:
+This assumption states that all errors $\epsilon_i$ have the same constant variance $\sigma^2$, meaning the variability of errors is consistent across all data points. This is a given assumption for linear regression, and this means that we can generalize the sigma term across all data points. So this assumption affects all calculation steps with sigma terms.
+  
+## Task c)
+
+
+\begin{align*}
+\text{First we start by taking the derivative of the log-likelihood function from task a):}\\
+\log L(\beta; \sigma^2;X)= -\frac{n}{2} \log(2\pi) - n \log(\sigma) - \frac{1}{2\sigma^2} (y - X\beta)^T (y - X\beta)\\
+\frac{\partial \log L(\beta; \sigma^2;X)}{\partial \beta}  = 0 - 0 - \frac{-2X^T(y - X\beta)}{2\sigma^2} \\
+\frac{\partial \log L(\beta; \sigma^2;X)}{\partial \beta}  =\frac{X^T(y - X\beta)}{\sigma^2} \\
+\text{We then set the derivative equal to zero:}\\
+\frac{X^T(y - X\hat{\beta})}{\sigma^2}  = 0\\
+X^T(y - X\hat{\beta})  = 0\\
+X^Ty - X^TX\hat{\beta}  = 0\\
+X^TX\hat{\beta}  = X^Ty\\
+\hat{\beta}  = (X^TX)^{-1}X^Ty\\
+\text{We can observe that our answer is similar to the Ordinary Least Squares estimate.}
+\end{align*}
+
+
+
+## Task d)
+
+
+\begin{align*}
+\text{First we calculate the derivative of the log-likelihood with respect to sigma and set it to zero:}\\
+\log L(\beta; \sigma^2;X) = -\frac{n}{2} \log(2\pi) - n \log(\sigma) - \frac{1}{2\sigma^2} \text{RSS}\\
+\frac{\partial \log L(\beta; x)}{\partial \sigma} = -\frac{n}{\sigma} + \frac{1}{\sigma^3} \text{RSS}\\
+\sigma^2 = \frac{\text{RSS}}{n} \\
+\text{Now that we have the expression for the MLE, we substitute it back into the log-likelihood formula:}\\
+\log L(\beta; \sigma^2;X) = -\frac{n}{2} \log(2\pi) - \frac{n}{2}\log\left(\frac{\text{RSS}}{n}\right) - \frac{n}{2} \\
+\log L(\beta; \sigma^2;X) = -\frac{n}{2} \left(\log(2\pi) + \log\left(\frac{\text{RSS}}{n}\right) + 1\right) \\
+\text{Finally, we plug the log-likelihood expression into the BIC formula:}\\
+\text{BIC} = -2\log L(\hat{\beta}; x) + k \log(n) \\
+\text{BIC} = \left(n\left(\log(2\pi) + \log\left(\frac{\text{RSS}}{n}\right) + 1\right)\right) + dim(\beta) \log(n) \\
+\end{align*}
+
+
+
+
