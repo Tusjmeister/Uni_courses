@@ -1,0 +1,1084 @@
+---
+title: "Compulsory 3"
+author: "Group 1"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(tseries)
+library(forecast)
+library(stats)
+library(depmixS4)
+library(tidyr)
+library(zoo)
+library(tidyverse)
+library(readr)
+library(dtw)
+library(glmnet)
+library(tsfeatures)
+library(caret)
+library(randomForest)
+library(TSclust)
+```
+
+#Exercise 1) 
+
+##Task a) 
+
+```{r ex1_a}
+rom_electricity = read.csv('romanian_electricity.csv')
+head(rom_electricity)
+
+# Checking for missing values in the dataset
+missing_values <- sapply(rom_electricity, function(x) sum(is.na(x)))
+missing_values
+
+rom_electricity <- rom_electricity %>%
+  mutate(Import_noNC = Consumption - Production + Nuclear)
+```
+
+```{r ex1_a1}
+variables <- c("Nuclear", "Import_noNC")
+
+par(mfrow=c(2, 2)) 
+
+for (var in variables) {
+  cat("Analysis for:", var, "\n")
+   
+  # KPSS Test for trend stationarity
+  cat("KPSS Test for Trend Stationarity\n")
+  print(kpss.test(rom_electricity[[var]]))
+  
+  # Checking for number of differences required
+  cat("Number of non-seasonal differences (ndiffs) needed:")
+  print(ndiffs(rom_electricity[[var]]))
+
+  # Autocorrelation
+  acf(rom_electricity[[var]], main=paste("ACF of", var))
+
+  # Partial Autocorrelation
+  pacf(rom_electricity[[var]], main=paste("PACF of", var))
+}
+```
+KPSS-tests yielded a p-value of 0.01 for all variables. This means that the null
+hypothesis can be rejected, which suggests there's no trend stationarity present 
+for these features. The ndiffs function returns 1 for both variables, indicating 
+the at least 1 differencin term is needed to make the series stationary. 
+The ACF plot for Nuclear shows significant autocorrelation 
+that persists across many lags without a sharp cut-off, which would suggest 
+non-stationarity. The ACF for Import_noNC gradually decays but does not drop 
+off sharply, which can indicate a non-stationary series or a series with 
+long-term dependence. 
+
+All off these factors indicates that both time series are non-stationary.
+
+##Task b) 
+
+1. What would the 2 states represent?
+
+The two states in an HMM applied to "Nuclear" might represent two distinct 
+phases of nuclear power production. For instance, State 2 could represent 
+a standard operation level, characterized by stable and predictable production 
+levels. On the other hand, State 1 could be a reduced operation level where 
+production levels are lower.
+
+In the context of "Import_noNC", the two states could represent different levels 
+of energy importation. State 1 might be periods with increased imports of
+energy importation, possibly due to increased demand or reduced domestic 
+production. State 2 could be phases of low import, indicating lesser dependency 
+on external energy sources.
+
+2. Which types of stochastic processes are used to model the observable and the 
+latent sequence, respectively?
+
+The observable sequence is typically modeled by a probability distribution 
+that depends on the current state. For example, if the data is continuous, a 
+Gaussian distribution is a common choice. 
+
+The latent sequence is modeled using a Markov process. This is a stochastic 
+process that satisfies the Markov property, meaning the next state depends 
+only on the current state and not on the sequence of events that preceded it.
+
+3. Are the model assumptions fulfilled?
+
+Markov property: This assumption holds if the future state of the series depends 
+only on the current state. For Nuclear and Import_noNC, if the processes are 
+mainly governed by the current state of the system, without the influence of 
+previous states, then this assumption is satisfied.
+
+Output Independence: If the observable outputs at each time point depend solely 
+on the current hidden state and are independent of the outputs at other times, 
+the assumption of output independence is met.
+
+Stationarity: The assumption is not met if we consider our results from previous 
+tasks. However, the degree of non-stationarity might be acceptable for 
+practical purposes.
+
+## Task c)
+
+```{r ex1_c}
+# Fitting HMM to "Nuclear"
+nuclear_hmm <- depmix(Nuclear ~ 1, family = gaussian(), data = rom_electricity, 
+                      nstates = 2)
+nuclear_fit <- fit(nuclear_hmm)
+
+# Model parameters for "Nuclear"
+summary(nuclear_fit)
+posterior_nuc = posterior(nuclear_fit, type = 'viterbi')
+
+# Fitting HMM to "Import_noNC"
+import_noNC_hmm <- depmix(Import_noNC ~ 1, family = gaussian(), 
+                          data = rom_electricity, nstates = 2)
+import_noNC_fit <- fit(import_noNC_hmm)
+
+# Model parameters for "Nuclear"
+summary(import_noNC_fit)
+posterior_noNC = posterior(import_noNC_fit, type = 'viterbi')
+
+rom_electricity$nuclear_state <- posterior_nuc$state
+rom_electricity$import_noNC_state <- posterior_noNC$state
+```
+
+```{r ex1_c1}
+# Reshaping the data
+long_data <- rom_electricity %>%
+  gather(key = "variable", value = "value", Nuclear, Import_noNC) %>%
+  mutate(state = ifelse(variable == "Nuclear", nuclear_state, 
+                        import_noNC_state))
+
+ggplot(long_data, aes(x = DateTime, y = value, color = factor(state), 
+                      group = variable)) +
+  geom_line() +
+  facet_wrap(~variable, scales = "free_y", nrow = 2) + 
+  labs(title = "Nuclear and Import_noNC Time Series with Predicted States",
+       x = "Time",
+       y = "Value",
+       color = "Predicted State") +
+  theme_minimal()
+```
+We can see from the plots that the two time series often is subject to changes 
+in their predicted states at roughly similar time points. There seems to be 
+a type of trigger which changes the predicted state for both time series. This 
+can for instance be external triggers which determines how much energy 
+importation and nuclear production is needed at certain times. A important point
+to mention here is that the variable import_noNC seems to be a little nit noisy,
+since the predicted states change frequently regardless of the current value. 
+
+## Task d) 
+
+```{r ex1_d}
+rom_electricity$Import_noNC_smoothed <- zoo::rollmean(rom_electricity$Import_noNC, 
+                                                      k = 501, fill = NA, 
+                                                      align = "center")
+
+#Re-fitting the HMM to the Smoothed Series
+import_noNC_smoothed_hmm <- depmix(Import_noNC_smoothed ~ 1,family = gaussian(), 
+                                   data = rom_electricity, nstates = 2)
+import_noNC_smoothed_fit <- fit(import_noNC_smoothed_hmm)
+
+# Printing model parameters for smoothed "Import_noNC"
+summary(import_noNC_smoothed_fit)
+posterior_noNC_smoothed = posterior(import_noNC_smoothed_fit, type = 'viterbi')
+
+rom_electricity$import_noNC_smoothed_state <- posterior_noNC_smoothed$state
+
+#Results
+long_data_smoothed <- rom_electricity %>%
+  gather(key = "variable", value = "value", Nuclear, Import_noNC_smoothed) %>%
+  mutate(state = ifelse(variable == "Nuclear", nuclear_state, 
+                        import_noNC_smoothed_state))
+
+ggplot(long_data_smoothed, aes(x = DateTime, y = value, color = factor(state), 
+                               group = variable)) +
+  geom_line() +
+  facet_wrap(~variable, scales = "free_y", nrow = 2) +
+  labs(title = "Smoothed Import_noNC with predicted states",
+       x = "Time",
+       y = "Value",
+       color = "Predicted State") +
+  theme_minimal()
+```
+(Also included Nuclear so that the plots from c) and d) look similar visually).
+In the plot from c), the changes in state are more frequent. This suggests that 
+the HMM is detecting more frequent shifts between states due to the higher 
+volatility of the unsmoothed data. In the plot from d), the color changes are 
+less frequent, indicating that smoothing has led to a more stable prediction of 
+states over time. The differences in state predictions before and after 
+smoothing suggest that the model's perception of the system's dynamics can be 
+affected by preprocessing steps. We can also notice that the colors of the 
+are reversed for the two versions of import_noNC. This could be due to the
+changes in the data distribution that is caused by the smoothing. 
+
+
+# Exercise 2 
+
+## Task a
+
+\textbf{Load in the dataset and perform an exploratory data analysis. 
+Convert the calendar week column to appropriate date object.}
+
+
+```{r ex2_a}
+
+tipburn = read.csv("tipburn.csv")
+
+# changing the date 
+df = data_frame(Date=as.Date(paste(tipburn$calendar_week, "1",sep ="_"),
+                             format=("%Y_%U_%u")))
+
+tipburn = cbind(df, tipburn[,2-3])
+head(tipburn, 3)
+
+```
+
+\textbf{Exploratory data analysis.}
+
+```{r ex2_a1}
+acf(tipburn[,2:3])
+pacf(tipburn[,2:3])
+
+summary(tipburn)
+
+```
+
+
+```{r ex2_a2}
+
+# Add 'group_inner' column
+tipburn <- tipburn %>%
+  mutate(group_inner = ifelse(tipburn$inner_tip_burn == 0, "None",
+  ifelse(tipburn$inner_tip_burn > 0 & tipburn$inner_tip_burn <= 0.25, "Weak", "Strong")))
+
+# Add 'group_outer' column
+tipburn <- tipburn %>%
+  mutate(group_outer = ifelse(tipburn$outer_tip_burn == 0, "None",
+  ifelse(tipburn$outer_tip_burn > 0 & tipburn$outer_tip_burn <= 0.25, "Weak", "Strong")))
+
+head(tipburn, 5)
+
+```
+
+## Task b)
+
+\textbf{Experts assume that tip burn is caused by some unobserved climate conditions.
+Explain why it makes sense to apply a discrete Hidden Markov Model with two latent
+states, which can be interpreted as "risk" and "non-risk" climate conditions.}
+
+The term "hidden" in Hidden Markov Model reflects the idea that the underlying states (in this case, climate conditions) are not directly observed but can be inferred from the observable outcomes (severity of tip burn).
+
+Climate conditions can vary over time and exhibit different patterns or regimes. For example, there may be periods of favorable conditions ("non-risk") and periods with conditions that contribute to tip burn ("risk"). The temporal aspect of HMMs allows for modeling the transitions between different climate states over time.
+
+The HMM's ability to model transitions between latent states is crucial. In the context of tip burn, it's plausible that plants may experience shifts in climate conditions that influence the likelihood and severity of tip burn.
+
+The two latent states, "risk" and "non-risk," provide a simplified representation of the underlying dynamics.
+
+\textbf{The three levels of the observable variable are: "none", "weak" and "strong" tip burn. You
+may treat inner and outer tip-burn as two separate models first. Which parameters
+would you suggest to use for initialization (\(\pi0\), A and B)? Which dimensions do these
+parameters have for each of the tip-burn types? }
+
+**\(\pi0\)(Initial State Probabilities)**:
+It represents the probabilities of starting in each latent state.
+Since we have two latent states ("risk" and "non-risk"), you can initialize \(\pi0\) as a vector with two elements, representing the initial probability of being in each state.
+
+Since we don't have prior knowledge about the initial state probabilities, we may choose to initialize them uniformly. This means setting \(\pi0\) to
+indicating an equal probability of starting in either the "risk" or "non-risk" state.
+
+$$\pi0 = [0.5, 0.5]$$
+
+
+
+**A (State Transition Probability Matrix)**:
+It represents the probabilities of transitioning from one latent state to another.
+Again, since we have two latent states, A is a 2x2 matrix.
+The element A[i, j] represents the probability of transitioning from state i to state j.
+
+For the state transition matrix A, consider the expected persistence or stability 
+of climate conditions. If you expect climate conditions to remain relatively stable
+over time then we may choose to initialize them uniformly.
+
+$$A = \begin{bmatrix}
+0.5 & 0.5 \\
+0.5 & 0.5  
+\end{bmatrix}	$$
+
+
+**B (Emission Probability Matrix)**:
+It represents the probabilities of observing each level of the observable variable given the latent state.
+As we have three levels ("none," "weak," and "strong"), B is a 2x3 matrix for each tip-burn type (inner and outer).
+The element B[i, k] represents the probability of observing level k given the latent state i.
+
+For the emission probability matrix B, you need to consider the probabilities of observing each level of the observable variable given the latent state.
+Since we don't have prior knowledge, we might start with a shifted uniform distribution.
+
+$$B = \begin{bmatrix}
+0.4 & 0.3 & 0.3\\
+0.3 & 0.3 & 0.4
+\end{bmatrix}	$$
+
+## Task c)
+
+```{r ex2_c}
+
+# Model for group_inner
+tipburn$group_inner <- as.factor(tipburn$group_inner)
+
+set.seed(4)
+hmm_model_inner <- depmix(group_inner ~ 1, nstates = 2,
+                          family = multinomial(), data = tipburn)
+hmm_model_inner <- depmixS4::fit(hmm_model_inner)
+
+summary(hmm_model_inner)
+
+# Posterior states
+posterior_inner <- posterior(hmm_model_inner, type="viterbi")
+
+# latent state
+ls_inner <- viterbi(hmm_model_inner)$state
+
+```
+
+```{r ex2_c1}
+
+# Model for group_outer
+tipburn$group_outer <- as.factor(tipburn$group_outer)
+
+set.seed(4)
+hmm_model_outer <- depmix(group_outer ~ 1, nstates = 2, 
+                          family = multinomial(), data = tipburn)
+hmm_model_outer <- depmixS4::fit(hmm_model_outer)
+
+summary(hmm_model_outer)
+
+# Posterior states
+posterior_inner <- posterior(hmm_model_outer, type="viterbi")
+
+# latent state
+ls_outer <- viterbi(hmm_model_outer)$state
+
+```
+
+
+```{r ex2_c2}
+# Model for both group_inner and group_outer simultaneously
+hmm_model_both <- depmix(list(group_inner~ 1, group_outer~ 1), nstates = 2, 
+                     family = list(multinomial(),multinomial()), data = tipburn)
+hmm_model_both <- depmixS4::fit(hmm_model_both)
+
+summary(hmm_model_both)
+
+# Posterior states
+posterior_inner <- posterior(hmm_model_both, type="viterbi")
+
+# latent sequence 
+#ls_both <- ifelse(ls_inner == 1, "Risk", "Non-Risk")
+ls_both <- viterbi(hmm_model_both)$state
+
+```
+
+## Task d)
+
+```{r ex2_d}
+
+# three new columns states_inner, states_outer and states_joint.
+tipburn$states_inner <- ls_inner
+tipburn$states_outer <- ls_outer
+tipburn$states_both <- ls_both
+head(tipburn,3)
+
+```
+
+
+```{r ex2_d1}
+
+# group inner vs state inner
+tipburn$states_inner <- as.factor(tipburn$states_inner)
+ggplot(tipburn, aes(Date, group_inner, col= states_inner)) +
+  scale_color_discrete(labels = c("non-risk","risk")) +
+  geom_point() + ggtitle("Group inner vs State inner")
+ 
+# group outer vs state outer
+tipburn$states_outer <- as.factor(tipburn$states_outer)
+ggplot(tipburn, aes(Date, group_outer, col= states_outer)) +
+  scale_color_discrete(labels = c("risk", "non-risk")) +
+  geom_point() + ggtitle("Group outer vs State outer")
+
+# group inner and group outer vs state both
+tipburn$states_both <- as.factor(tipburn$states_both)
+tipburn_long <- gather(tipburn, key = "group_type", value = "value", group_inner, group_outer)
+
+ggplot(tipburn_long, aes(x = Date, y = value, col = states_both, linetype = group_type)) +
+  ggtitle("Group Inner and Group Outer vs States both") +
+  scale_color_discrete(labels = c("non-risk","risk")) +
+  geom_point() 
+
+```
+
+\textbf{Group inner vs State inner:}
+
+We can assume that the risk is mostly on the weak and some in strong, nothing 
+in the None. 
+
+\textbf{Group outer vs State outer:}
+
+We can assume that the risk is more in the strong part, while the non-risk is 
+mainly in the weak- and none region. 
+
+\textbf{Group Inner and Group Outer vs States both:} 
+
+The risk and non-risk is in all the three values in the y-axis, for the weak we
+have slightly more non-risk that risk. In the case for strong we have almost only risk.
+None has a majority of non-risk.
+
+
+```{r ex2_d2}
+
+# Function to compute pairwise accuracy
+compute_pairwise_accuracy <- function(seq1, seq2) {
+  if (length(seq1) != length(seq2)) {
+    stop("Sequences must have the same length.")
+  }
+  matching_states <- sum(seq1 == seq2)
+  accuracy <- matching_states / length(seq1)
+  return(accuracy)
+}
+
+# Compute pairwise accuracy
+accuracy_inner_outer <- compute_pairwise_accuracy(ls_inner, ls_outer)
+accuracy_inner_both <- compute_pairwise_accuracy(ls_inner, ls_both)
+accuracy_outer_both <- compute_pairwise_accuracy(ls_outer, ls_both)
+
+# Display the results
+cat("Pairwise Accuracy (Inner vs. Outer):", accuracy_inner_outer, "\n")
+cat("Pairwise Accuracy (Inner vs. Inner and Outer):", accuracy_inner_both, "\n")
+cat("Pairwise Accuracy (Outer vs. Inner and Outer):", accuracy_outer_both, "\n")
+
+```
+
+
+## Exercise 3
+
+## Task a)
+
+```{r ex3_a}
+# Loading the dataset
+pedestrian_data <- read.csv("pedestrian.csv")
+```
+
+```{r ex3_a1}
+# Exploratory Data Analysis
+print(head(pedestrian_data, 3))
+summary(pedestrian_data)
+
+```
+```{r ex3_a2}
+# Create a separate hour column
+pedestrian_data_long <- pivot_longer(pedestrian_data, cols = starts_with("H"),
+                                     names_to = "hour", values_to = "count")
+pedestrian_data_long$hour <- as.numeric(sub("H", "", pedestrian_data_long$hour))
+
+# Calculate mean and standard deviation
+agg_data <- pedestrian_data_long %>%
+  group_by(target, hour) %>%
+  summarise(mean = mean(count), std = sd(count), .groups = 'drop')
+
+# Plotting
+ggplot(agg_data, aes(x = hour, y = mean, group = target,
+                     color = factor(target))) +
+  geom_line() +
+  geom_ribbon(aes(ymin = mean - std, ymax = mean + std,
+                  fill = factor(target)), alpha = 0.3) +
+  scale_color_manual(values = c("blue", "green")) +
+  scale_fill_manual(values = c("blue", "green")) +
+  labs(x = "Hour of the Day", y = "Average Pedestrian Count",
+       title = "Average Hourly Pedestrian Count: Weekend (1) vs. Workday (2)",
+       color = "Class", fill = "Class") +
+  theme_minimal()
+```
+
+
+```{r ex3_a3}
+
+# Separating the dataset into weekend and workday
+weekend_data <- pedestrian_data[pedestrian_data$target == 1, 1:24]
+workday_data <- pedestrian_data[pedestrian_data$target == 2, 1:24]
+
+# Aggregate data by summing across all hours for each day
+daily_counts_weekend <- rowSums(weekend_data)
+daily_counts_workday <- rowSums(workday_data)
+
+# Convert to time series objects
+ts_weekend <- ts(daily_counts_weekend)
+ts_workday <- ts(daily_counts_workday)
+
+# ACF for weekend
+acf(ts_weekend, main="ACF for Weekend Pedestrian Counts", lag.max = 24)
+
+# PACF for weekend
+pacf(ts_weekend, main="PACF for Weekend Pedestrian Counts", lag.max = 24)
+
+```
+
+```{r ex_3a4}
+# ACF for workday
+acf(ts_workday, main="ACF for Workday Pedestrian Counts", lag.max = 24)
+
+# PACF for workday
+pacf(ts_workday, main="PACF for Workday Pedestrian Counts", lag.max = 24)
+```
+
+There are several differences between the two classes:
+
+
+Peak Times:
+
+For workdays, there's a noticeable peak during typical office hours,
+particularly in the early evening. 
+
+Morning Activity:
+
+On workdays, the pedestrian count starts increasing earlier in the morning,
+likely due to people commuting to work, while on weekends,
+the increase in pedestrian traffic starts later.
+
+Evening Activity:
+
+The pedestrian count remains higher in the evening hours
+on weekends compared to workdays, suggesting more recreational
+or social activities during weekend evenings.
+
+Variability:
+
+The standard deviation (indicated by the shaded area)
+is generally higher on weekends, especially during the evening hours,
+indicating more variability in pedestrian counts.
+
+## Task b)
+
+```{r ex3_b}
+
+# Split the samples into a 70%-30% train-test split
+set.seed(123)
+
+index <- createDataPartition(y=pedestrian_data$target, p = 0.7, list = FALSE)
+train_data <- pedestrian_data[index,]
+test_data <- pedestrian_data[-index,]
+
+# fjerne konstant kolloner 
+train_features <- tsfeatures(ts(t(unname(as.matrix(train_data[,1:24])))))
+test_features <- tsfeatures(ts(t(unname(as.matrix(test_data[,1:24])))))
+
+head(train_features, 3)
+head(test_features, 3)
+
+```
+
+```{r ex3_c}
+
+# Logistic Regression
+mod_logreg <- caret::train(
+  x = train_features,
+  y = as.factor(train_data$target),
+  method = "glmnet",
+  family = "binomial",
+  trControl = trainControl(method = "cv"),
+  tuneLength = 3
+)
+
+# Make predictions on the test set
+logistic_pred <- predict(mod_logreg, newdata = test_features)
+
+# confusion matrix
+logistic_metrics <- confusionMatrix(logistic_pred, as.factor(test_data$target))
+
+summary(mod_logreg)
+print(logistic_metrics)
+```
+
+```{r ex3_c1}
+
+# Train a classifier (Random Forest)
+mod_rf <- caret::train(
+  x = train_features,
+  y = as.factor(train_data$target),
+  method = "rf",  
+  family = "binomial",
+  trControl = trainControl(method = "cv"),
+  tuneLength = 3)
+
+# Make predictions on the test set
+rf_pred <- predict(mod_rf, newdata = test_features)
+
+# confusion matrix 
+rf_metrics <- confusionMatrix(rf_pred, as.factor(test_data$target))
+
+summary(mod_rf)
+print(rf_metrics)
+```
+
+
+```{r ex3_c2}
+
+# Extract accuracy and F1 scores
+logistic_accuracy <- logistic_metrics$overall["Accuracy"]
+logistic_f1 <- logistic_metrics$byClass["F1"]
+rf_accuracy <- rf_metrics$overall["Accuracy"]
+rf_f1 <- rf_metrics$byClass["F1"]
+
+# Compare and interpret the results
+cat("Logistic Regression Model:\n")
+cat("Accuracy:", logistic_accuracy, "\n")
+cat("F1 Score:", logistic_f1, "\n\n")
+
+cat("Random Forest Model:\n")
+cat("Accuracy:", rf_accuracy, "\n")
+cat("F1 Score:", rf_f1, "\n")
+```
+
+
+
+```{r ex3_d}
+
+# Calculate mean and standard deviation using mutate and rowwise
+train_data <- train_data %>%
+  rowwise() %>%
+  mutate(
+    mean = mean(c_across(starts_with("H"))),
+    sd = sd(c_across(starts_with("H")))
+  )
+
+test_data <- test_data %>%
+  rowwise() %>%
+  mutate(
+    mean = mean(c_across(starts_with("H"))),
+    sd = sd(c_across(starts_with("H")))
+  )
+
+# creating new dataframe 
+train_mean_sd <- train_data[,25:27]
+test_mean_sd <- test_data[,25:27]
+
+head(train_mean_sd,3)
+head(test_mean_sd,3)
+```
+
+
+```{r ex3_d1}
+
+# Train logistic regression on baseline features
+mod_logreg_baseline <- caret::train(
+  x = train_mean_sd[, 2:3],
+  y = as.factor(train_mean_sd$target),
+  method = "glmnet",
+  family = "binomial",
+  trControl = trainControl(method = "cv"),
+  tuneLength = 3
+)
+
+# Make predictions on the test set
+logistic_pred_baseline <- predict(mod_logreg_baseline, newdata = test_mean_sd)
+
+# Evaluate baseline model
+acc_logreg_baseline <- confusionMatrix(logistic_pred_baseline, as.factor(test_mean_sd$target))
+
+# Extract accuracy and F1 scores
+logistic_accuracy_mean_sd <- acc_logreg_baseline$overall["Accuracy"]
+logistic_f1_mean_sd <- acc_logreg_baseline$byClass["F1"]
+
+
+# Compare the performance of models
+cat("\nComparison:\n")
+print(acc_logreg_baseline)
+
+```
+
+```{r ex3_d2}
+
+# Train logistic regression on baseline features
+mod_rf_baseline <- caret::train(
+  x = train_mean_sd[,2:3],
+  y = as.factor(train_mean_sd$target),
+  method = "rf",
+  family = "binomial",
+  trControl = trainControl(method = "cv"),
+  tuneLength = 3
+)
+
+# Make predictions on the test set
+rf_pred_baseline <- predict(mod_rf_baseline, newdata = test_mean_sd)
+
+# Evaluate baseline model
+acc_rf_baseline <- confusionMatrix(rf_pred_baseline, as.factor(test_mean_sd$target))
+
+# Extract accuracy and F1 scores
+rf_accuracy_mean_sd <- acc_rf_baseline$overall["Accuracy"]
+rf_f1_mean_sd <- acc_rf_baseline$byClass["F1"]
+
+# Compare the performance of models
+cat("\nComparison:\n")
+print(acc_rf_baseline)
+
+
+```
+
+
+```{r ex3_d3}
+
+# Comparing all the model results from both task c and d
+
+# Logistic regression
+
+cat("\nLogistic Regression Model with tsfeatures:\n")
+cat("Accuracy:", logistic_accuracy, "\n")
+cat("F1 Score:", logistic_f1, "\n\n")
+
+cat("Logistic Regression Baseline:\n")
+cat("Accuracy:", logistic_accuracy_mean_sd, "\n")
+cat("F1 Score:", logistic_f1_mean_sd, "\n\n")
+
+# Random forest 
+
+cat("Random Forest Model with tsfeatures:\n")
+cat("Accuracy:", rf_accuracy, "\n")
+cat("F1 Score:", rf_f1, "\n\n")
+
+cat("random forest Regression Baseline :\n")
+cat("Accuracy:", rf_accuracy_mean_sd, "\n")
+cat("F1 Score:", rf_f1_mean_sd, "\n\n")
+
+```
+
+
+
+## Exercise 4
+
+## Task a)
+
+```{r}
+
+coffee_data <- read.csv("coffee_train.csv")
+
+test_coffee <- read.csv("coffee_test.csv")
+```
+
+```{r}
+# Exploratory Data Analysis
+print(head(coffee_data,1))
+```
+
+
+```{r}
+# Removing the 'target' column before checking for NaN values
+coffee_data_no_target <- dplyr::select(coffee_data, -target)
+coffee_test_no_target <- dplyr::select(test_coffee, -target)
+
+# Checking for NaN values in both datasets (excluding 'target' column)
+sum_nan_coffee_data <- sapply(coffee_data_no_target, function(x) sum(is.nan(x)))
+sum_nan_coffee_test <- sapply(coffee_test_no_target, function(x) sum(is.nan(x)))
+
+print("NaN values in coffee_data (excluding 'target'):")
+print(sum(sum_nan_coffee_data))
+print("NaN values in test_coffee (excluding 'target'):")
+print(sum(sum_nan_coffee_test))
+```
+
+
+
+```{r}
+# Plotting Class Distributions
+ggplot(coffee_data, aes(x = factor(target))) + 
+    geom_bar() +
+    labs(title = "Class Distribution", x = "Class", y = "Count")
+
+# Preparing data for time series plot
+# Melting the data frame from wide to long format
+long_coffee_data <- coffee_data %>%
+    pivot_longer(cols = starts_with("V"), names_to = "time",
+                 values_to = "value") %>%
+    mutate(time = as.numeric(gsub("V", "", time)))
+
+# Calculating mean and standard deviation for each class and time
+class_stats <- long_coffee_data %>%
+    group_by(target, time) %>%
+    summarize(mean = mean(value), sd = sd(value), .groups = 'drop')
+
+# Plotting Class Averages Across Time with Shading
+ggplot(class_stats, aes(x = time, y = mean, color = factor(target))) +
+    geom_line() +
+    geom_ribbon(aes(ymin = mean - sd, ymax = mean + sd, fill = factor(target)),
+                alpha = 0.2) +
+    labs(title = "Class Averages Across Time", x = "Time",
+         y = "Average Measurement") +
+    scale_x_continuous(breaks = seq(min(class_stats$time),
+                                    max(class_stats$time), by = 30))
+```
+
+
+
+```{r}
+# Melting the data frame from wide to long format
+long_coffee_data <- coffee_data %>%
+    pivot_longer(cols = starts_with("V"), names_to = "time",
+                 values_to = "value") %>%
+    mutate(time = as.numeric(gsub("V", "", time)))
+
+# Calculating mean for each class and time
+class_averages <- long_coffee_data %>%
+    group_by(target, time) %>%
+    summarize(mean = mean(value), .groups = 'drop')
+
+# Separate the data by class
+class_0_averages <- filter(class_averages,
+                           target == 0) %>% arrange(time) %>% dplyr::select(mean)
+class_1_averages <- filter(class_averages,
+                           target == 1) %>% arrange(time) %>% dplyr::select(mean)
+
+# ACF and PACF for Class 0
+acf(as.numeric(class_0_averages$mean), main="ACF for Class 0 Averages",
+    lag.max = 30)
+pacf(as.numeric(class_0_averages$mean), main="PACF for Class 0 Averages",
+     lag.max = 30)
+
+# ACF and PACF for Class 1
+acf(as.numeric(class_1_averages$mean), main="ACF for Class 1 Averages",
+    lag.max = 30)
+pacf(as.numeric(class_1_averages$mean), main="PACF for Class 1 Averages",
+     lag.max = 30)
+```
+
+
+```{r}
+# ACF and PACF for Class 0
+acf(as.numeric(class_0_averages$mean), main="ACF for Class 0 Averages",
+    lag.max = 365)
+pacf(as.numeric(class_0_averages$mean), main="PACF for Class 0 Averages",
+     lag.max = 365)
+
+# ACF and PACF for Class 1
+acf(as.numeric(class_1_averages$mean), main="ACF for Class 1 Averages",
+    lag.max = 365)
+pacf(as.numeric(class_1_averages$mean), main="PACF for Class 1 Averages",
+     lag.max = 365)
+
+```
+From the information gathered from the exploratory analysis, one can see that 
+the two classes are almost identical. This can be seen from the graph of the
+class averages over time, where the standard deviation of the two classes 
+overlap several times. This is also evident from the ACF plots, where the
+differences between the classes are minuscule.
+
+
+## Task b)
+```{r}
+# Cluster for euclidian distance
+
+euclidean_dist <- coffee_data %>%
+  dplyr::select(-target, -index) %>%
+  t() %>%
+  as.data.frame() %>%
+  TSclust::diss(METHOD = "EUCL")
+
+names(euclidean_dist) <- coffee_data$index
+
+
+euclidean_dist %>%
+  hclust() %>%
+  plot()
+```
+
+
+```{r}
+# Cluster for DTW distance
+dtw_dist <- coffee_data %>%
+  dplyr::select(-target, -index) %>%
+  t() %>%
+  as.data.frame() %>%
+  TSclust::diss(METHOD = "DTWARP")
+
+names(dtw_dist) <- coffee_data$index
+
+
+dtw_dist %>%
+  hclust() %>%
+  plot()
+
+```
+
+```{r}
+# Cluster for ACF distance
+
+acf_dist <- coffee_data %>%
+  dplyr::select(-target, -index) %>%
+  t() %>%
+  as.data.frame() %>%
+  TSclust::diss(METHOD = "ACF")
+
+names(acf_dist) <- coffee_data$index
+
+
+acf_dist %>%
+  hclust() %>%
+  plot()
+```
+
+```{r}
+# Perform hierarchical clustering
+hc_euclidean <- hclust(euclidean_dist)
+
+# Cut the dendrogram into 3 clusters
+clusters_euclidean <- cutree(hc_euclidean, k = 3)
+
+# Plot the dendrogram with color-coded clusters
+plot(hc_euclidean, labels = coffee_data$index, cex = 0.6,
+     main = "Euclidean Cluster Dendogram")
+rect.hclust(hc_euclidean, k = 3, border = 2:4)
+
+```
+
+```{r}
+# Perform hierarchical clustering
+hc_dtw <- hclust(dtw_dist)
+
+# Cut the dendrogram into 3 clusters
+clusters_dtw <- cutree(hc_dtw, k = 3)
+
+# Plot the dendrogram with color-coded clusters
+plot(hc_dtw, labels = coffee_data$index, cex = 0.6,
+     main = "DTW Cluster Dendogram")
+rect.hclust(hc_dtw, k = 3, border = 2:4)
+
+```
+
+```{r}
+# Perform hierarchical clustering
+hc_acf <- hclust(acf_dist)
+
+# Cut the dendrogram into 3 clusters
+clusters_acf <- cutree(hc_acf, k = 3)
+
+# Plot the dendrogram with color-coded clusters
+plot(hc_acf, labels = coffee_data$index, cex = 0.6,
+     main = "ACF Cluster Dendogram")
+rect.hclust(hc_acf, k = 3, border = 2:4)
+
+```
+
+## Task c)
+
+```{r}
+
+coffee_data$cluster_euclidean <- clusters_euclidean
+coffee_data$cluster_dtw <- clusters_dtw
+coffee_data$cluster_acf <- clusters_acf
+
+```
+
+```{r}
+
+# Function to calculate purity
+calculate_purity <- function(data, cluster_col) {
+  data %>%
+    group_by(!!sym(cluster_col), target) %>%
+    summarise(count = n(), .groups = 'drop') %>%
+    arrange(!!sym(cluster_col), desc(count)) %>%
+    group_by(!!sym(cluster_col)) %>%
+    summarise(purity = first(count) / sum(count), .groups = 'drop')
+}
+
+# Calculate purity for each clustering method
+purity_euclidean <- calculate_purity(coffee_data, "cluster_euclidean")
+purity_dtw <- calculate_purity(coffee_data, "cluster_dtw")
+purity_acf <- calculate_purity(coffee_data, "cluster_acf")
+
+# Calculate average purity
+avg_purity_euclidean <- mean(purity_euclidean$purity)
+avg_purity_dtw <- mean(purity_dtw$purity)
+avg_purity_acf <- mean(purity_acf$purity)
+
+# Print average purities
+print(avg_purity_euclidean)
+print(avg_purity_dtw)
+print(avg_purity_acf)
+
+```
+
+```{r}
+best_method <- which.max(c(avg_purity_euclidean, avg_purity_dtw, avg_purity_acf))
+method_names <- c("Euclidean", "DTW", "ACF")
+print(paste("Best method:", method_names[best_method]))
+
+```
+The best method is the Euclidean method, with a purity of 1. The number does
+seem a little bit too good to be true, because it does not seem realistic.
+
+## Task d)
+
+```{r}
+distances  <- euclidean_dist %>%
+  hclust() %>%
+  stats::cutree(k=3)
+```
+
+```{r}
+# Add cluster assignments to the coffee_data
+coffee_data$cluster <- cutree(hclust(euclidean_dist), k = 3)
+
+# Function to calculate centroids
+calculate_centroids <- function(data, cluster_col) {
+  data %>%
+    dplyr::select(starts_with("V"), all_of(cluster_col)) %>%
+    group_by(!!sym(cluster_col)) %>%
+    summarise(across(starts_with("V"), mean, na.rm = TRUE), .groups = 'drop')
+}
+
+# Calculate centroids
+centroids <- calculate_centroids(coffee_data, "cluster")
+
+```
+
+```{r}
+# Function to assign test data to the nearest centroid
+assign_to_nearest_centroid <- function(test_data, centroids) {
+  v_cols <- colnames(centroids)[colnames(centroids) != "cluster"]
+  
+  sapply(1:nrow(test_data), function(i) {
+    distances <- sapply(1:nrow(centroids), function(j) {
+      dist(rbind(test_data[i, v_cols], centroids[j, v_cols]))
+    })
+    which.min(distances)
+  })
+}
+
+# Assign clusters to the test data
+test_coffee$assigned_cluster <- assign_to_nearest_centroid(test_coffee,
+                                                           centroids)
+```
+
+
+```{r}
+# Make dataframe from the target and cluster assignments
+
+clust.table <- coffee_data %>%
+  dplyr::select(index, target) %>%
+  mutate(clust.ecl = distances)
+clust.table %>% group_by(clust.ecl) %>% count(target)
+```
+
+```{r}
+# After determining the majority class for each cluster
+# we can assign the cluster to the target
+cluster_to_target <- c("1" = 0, "2" = 0, "3" = 1)
+
+test_coffee$predicted_target <- sapply(test_coffee$assigned_cluster, function(cluster) cluster_to_target[as.character(cluster)])
+
+
+confusion_matrix <- table(Predicted = test_coffee$predicted_target
+                          , Actual = test_coffee$target)
+
+print(confusion_matrix)
+
+```
+
